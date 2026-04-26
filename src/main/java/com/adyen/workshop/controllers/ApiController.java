@@ -76,11 +76,14 @@ public class ApiController {
         paymentRequest.setReturnUrl("https://ominous-barnacle-454xrw54jgf7xwp-8080.app.github.dev/handleShopperRedirect");
 
         // PreAuth flag + manual capture so we can adjust/capture/cancel/refund later.
+        // captureDelayHours is intentionally NOT set: some merchant accounts reject -1 with
+        // "Auto-capture delay invalid or out of range". Configure Manual Capture at the
+        // merchant level in the Customer Area instead. additionalData.manualCapture=true is a
+        // belt-and-suspenders hint for accounts that still honour it.
         var additionalData = new HashMap<String, String>();
         additionalData.put("authorisationType", "PreAuth");
         additionalData.put("manualCapture", "true");
         paymentRequest.setAdditionalData(additionalData);
-        paymentRequest.setCaptureDelayHours(-1); // -1 = manual capture; overrides Customer Area capture-delay config.
 
         // 3DS2 Redirect support - keep so the drop-in can finish challenges if the issuer requests one.
         var authenticationData = new AuthenticationData();
