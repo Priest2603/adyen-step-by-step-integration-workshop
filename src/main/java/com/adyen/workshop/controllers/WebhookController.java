@@ -54,6 +54,29 @@ public class WebhookController {
             // Success, log it for now
             log.info("Received webhook with event {}", item.toString());
 
+            // Tokenization - surface the recurringDetailReference (token) for the manual test flow.
+            String eventCode = item.getEventCode();
+            var additionalData = item.getAdditionalData();
+
+            if ("RECURRING_CONTRACT".equalsIgnoreCase(eventCode)) {
+                // For RECURRING_CONTRACT webhooks, the pspReference of the notification IS the token.
+                log.info("*** RECURRING_CONTRACT received - recurringDetailReference (token) = {} ***",
+                        item.getPspReference());
+            }
+
+            if (additionalData != null) {
+                String token = additionalData.get("recurring.recurringDetailReference");
+                if (token != null) {
+                    log.info("*** {} webhook contains recurring.recurringDetailReference (token) = {} ***",
+                            eventCode, token);
+                }
+            }
+
+            if ("AUTHORISATION".equalsIgnoreCase(eventCode)) {
+                log.info("*** AUTHORISATION webhook - success={} pspReference={} merchantReference={} ***",
+                        item.getSuccess(), item.getPspReference(), item.getMerchantReference());
+            }
+
             return ResponseEntity.accepted().build();
         } catch (SignatureException e) {
             // Handle invalid signature
