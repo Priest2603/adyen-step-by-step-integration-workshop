@@ -98,8 +98,8 @@ async function startCheckout() {
                 holderNameRequired: true,
                 name: "Credit or debit card",
                 amount: {
-                    value: 9998,
-                    currency: "EUR",
+                    value: 1000,
+                    currency: "USD",
                 },
                 placeholders: {
                     cardNumber: '1234 5678 9012 3456',

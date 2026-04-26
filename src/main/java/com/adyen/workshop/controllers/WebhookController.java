@@ -54,6 +54,55 @@ public class WebhookController {
             // Success, log it for now
             log.info("Received webhook with event {}", item.toString());
 
+            // Preauthorisation module - surface every webhook type used by the pre-auth flow.
+            String eventCode = item.getEventCode();
+            String psp = item.getPspReference();
+            String originalPsp = item.getOriginalReference();
+            boolean success = item.isSuccess();
+            var amount = item.getAmount();
+            String amountStr = amount != null ? amount.getValue() + " " + amount.getCurrency() : "n/a";
+
+            switch (eventCode == null ? "" : eventCode.toUpperCase()) {
+                case "AUTHORISATION":
+                    log.info("*** AUTHORISATION webhook - success={} pspReference={} amount={} merchantReference={} ***",
+                            success, psp, amountStr, item.getMerchantReference());
+                    break;
+                case "AUTHORISATION_ADJUSTMENT":
+                    log.info("*** AUTHORISATION_ADJUSTMENT webhook - success={} pspReference={} originalReference={} amount={} ***",
+                            success, psp, originalPsp, amountStr);
+                    break;
+                case "CAPTURE":
+                    log.info("*** CAPTURE webhook - success={} pspReference={} originalReference={} amount={} ***",
+                            success, psp, originalPsp, amountStr);
+                    break;
+                case "CAPTURE_FAILED":
+                    log.info("*** CAPTURE_FAILED webhook - pspReference={} originalReference={} reason={} ***",
+                            psp, originalPsp, item.getReason());
+                    break;
+                case "CANCELLATION":
+                    log.info("*** CANCELLATION webhook - success={} pspReference={} originalReference={} ***",
+                            success, psp, originalPsp);
+                    break;
+                case "TECHNICAL_CANCEL":
+                    log.info("*** TECHNICAL_CANCEL webhook - success={} pspReference={} originalReference={} ***",
+                            success, psp, originalPsp);
+                    break;
+                case "REFUND":
+                    log.info("*** REFUND webhook - success={} pspReference={} originalReference={} amount={} ***",
+                            success, psp, originalPsp, amountStr);
+                    break;
+                case "REFUND_FAILED":
+                    log.info("*** REFUND_FAILED webhook - pspReference={} originalReference={} reason={} ***",
+                            psp, originalPsp, item.getReason());
+                    break;
+                case "REFUNDED_REVERSED":
+                    log.info("*** REFUNDED_REVERSED webhook - pspReference={} originalReference={} ***",
+                            psp, originalPsp);
+                    break;
+                default:
+                    log.info("Webhook eventCode={} pspReference={} success={}", eventCode, psp, success);
+            }
+
             return ResponseEntity.accepted().build();
         } catch (SignatureException e) {
             // Handle invalid signature

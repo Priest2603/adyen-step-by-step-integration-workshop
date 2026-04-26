@@ -3,6 +3,7 @@ package com.adyen.workshop.controllers;
 import com.adyen.model.RequestOptions;
 import com.adyen.model.checkout.*;
 import com.adyen.workshop.configurations.ApplicationConfiguration;
+import com.adyen.service.checkout.ModificationsApi;
 import com.adyen.service.checkout.PaymentsApi;
 import com.adyen.service.exception.ApiException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -28,10 +29,12 @@ public class ApiController {
 
     private final ApplicationConfiguration applicationConfiguration;
     private final PaymentsApi paymentsApi;
+    private final ModificationsApi modificationsApi;
 
-    public ApiController(ApplicationConfiguration applicationConfiguration, PaymentsApi paymentsApi) {
+    public ApiController(ApplicationConfiguration applicationConfiguration, PaymentsApi paymentsApi, ModificationsApi modificationsApi) {
         this.applicationConfiguration = applicationConfiguration;
         this.paymentsApi = paymentsApi;
+        this.modificationsApi = modificationsApi;
     }
 
     // Step 0
@@ -52,38 +55,39 @@ public class ApiController {
         return ResponseEntity.ok().body(response);
     }
 
-    // Step 9 - Implement the /payments call to Adyen.
+    // Preauthorisation module - /payments call with PreAuth flag and manual capture (captureDelayHours = -1).
+    // Amount is 10 USD (1000 minor units). The pspReference returned is the one used for
+    // /api/adjustAuthorisation, /api/capture, /api/cancel and /api/refund below.
     @PostMapping("/api/payments")
     public ResponseEntity<PaymentResponse> payments(@RequestBody PaymentRequest body) throws IOException, ApiException {
         var paymentRequest = new PaymentRequest();
-        
+
         var amount = new Amount()
-                .currency("EUR")
-                .value(9998L);
+                .currency("USD")
+                .value(1000L); // 10 USD pre-auth
         paymentRequest.setAmount(amount);
         paymentRequest.setMerchantAccount(applicationConfiguration.getAdyenMerchantAccount());
         paymentRequest.setChannel(PaymentRequest.ChannelEnum.WEB);
-    
+
         paymentRequest.setPaymentMethod(body.getPaymentMethod());
-    
+
         var orderRef = UUID.randomUUID().toString();
         paymentRequest.setReference(orderRef);
-        // The returnUrl field basically means: Once done with the payment, where should the application redirect you?
         paymentRequest.setReturnUrl("https://ominous-barnacle-454xrw54jgf7xwp-8080.app.github.dev/handleShopperRedirect");
 
+        // PreAuth flag + manual capture so we can adjust/capture/cancel/refund later.
+        var additionalData = new HashMap<String, String>();
+        additionalData.put("authorisationType", "PreAuth");
+        additionalData.put("manualCapture", "true");
+        paymentRequest.setAdditionalData(additionalData);
+        paymentRequest.setCaptureDelayHours(-1); // -1 = manual capture; overrides Customer Area capture-delay config.
 
-        // Step 12 3DS2 Redirect - Add the following additional parameters to your existing payment request for 3DS2 Redirect:
-        // Note: Visa requires additional properties to be sent in the request, see documentation for Redirect 3DS2: https://docs.adyen.com/online-payments/3d-secure/redirect-3ds2/web-drop-in/#make-a-payment
+        // 3DS2 Redirect support - keep so the drop-in can finish challenges if the issuer requests one.
         var authenticationData = new AuthenticationData();
         authenticationData.setAttemptAuthentication(AuthenticationData.AttemptAuthenticationEnum.ALWAYS);
         paymentRequest.setAuthenticationData(authenticationData);
 
-        // Change the following lines, if you want to enable the Native 3DS2 flow:
-        // Note: Visa requires additional properties to be sent in the request, see documentation for Native 3DS2: https://docs.adyen.com/online-payments/3d-secure/native-3ds2/web-drop-in/#make-a-payment
-        //authenticationData.setThreeDSRequestData(new ThreeDSRequestData().nativeThreeDS(ThreeDSRequestData.NativeThreeDSEnum.PREFERRED));
-        //paymentRequest.setAuthenticationData(authenticationData);
-
-        paymentRequest.setOrigin("https://localhost:8080");
+        paymentRequest.setOrigin("https://ominous-barnacle-454xrw54jgf7xwp-8080.app.github.dev");
         paymentRequest.setBrowserInfo(body.getBrowserInfo());
         paymentRequest.setShopperIP("192.168.0.1");
         paymentRequest.setShopperInteraction(PaymentRequest.ShopperInteractionEnum.ECOMMERCE);
@@ -95,15 +99,95 @@ public class ApiController {
         billingAddress.setStreet("Rokin");
         billingAddress.setHouseNumberOrName("49");
         paymentRequest.setBillingAddress(billingAddress);
-        
-        // Step 11 - Optionally add the idempotency key
+
         var requestOptions = new RequestOptions();
         requestOptions.setIdempotencyKey(UUID.randomUUID().toString());
-    
-        log.info("PaymentsRequest {}", paymentRequest);
-        var response = paymentsApi.payments(paymentRequest, requestOptions); // add RequestOptions here
-        log.info("PaymentsResponse {}", response);
-        
+
+        log.info("PreAuth PaymentsRequest {}", paymentRequest);
+        var response = paymentsApi.payments(paymentRequest, requestOptions);
+        log.info("PreAuth PaymentsResponse {}", response);
+        log.info("*** PreAuth completed - pspReference={} amount={} {} resultCode={} ***",
+                response.getPspReference(),
+                response.getAmount() != null ? response.getAmount().getValue() : null,
+                response.getAmount() != null ? response.getAmount().getCurrency() : null,
+                response.getResultCode());
+
+        return ResponseEntity.ok().body(response);
+    }
+
+    // Preauthorisation module - bump authorised amount (async). Default target 66 USD (6600 minor units).
+    // curl -X POST "https://<host>/api/adjustAuthorisation/{pspReference}?value=6600&currency=USD"
+    @PostMapping("/api/adjustAuthorisation/{pspReference}")
+    public ResponseEntity<PaymentAmountUpdateResponse> adjustAuthorisation(
+            @PathVariable String pspReference,
+            @RequestParam(defaultValue = "6600") Long value,
+            @RequestParam(defaultValue = "USD") String currency) throws IOException, ApiException {
+
+        var request = new PaymentAmountUpdateRequest();
+        request.setMerchantAccount(applicationConfiguration.getAdyenMerchantAccount());
+        request.setAmount(new Amount().currency(currency).value(value));
+        request.setReference(UUID.randomUUID().toString());
+        request.setIndustryUsage(PaymentAmountUpdateRequest.IndustryUsageEnum.DELAYEDCHARGE);
+
+        log.info("AdjustAuthorisation request pspReference={} value={} {}", pspReference, value, currency);
+        var response = modificationsApi.updateAuthorisedAmount(pspReference, request);
+        log.info("*** AdjustAuthorisation response pspReference={} status={} ***",
+                response.getPspReference(), response.getStatus());
+        return ResponseEntity.ok().body(response);
+    }
+
+    // Preauthorisation module - capture the pre-authorised payment (default 66 USD to match the adjustment).
+    // curl -X POST "https://<host>/api/capture/{pspReference}?value=6600&currency=USD"
+    @PostMapping("/api/capture/{pspReference}")
+    public ResponseEntity<PaymentCaptureResponse> capture(
+            @PathVariable String pspReference,
+            @RequestParam(defaultValue = "6600") Long value,
+            @RequestParam(defaultValue = "USD") String currency) throws IOException, ApiException {
+
+        var request = new PaymentCaptureRequest();
+        request.setMerchantAccount(applicationConfiguration.getAdyenMerchantAccount());
+        request.setAmount(new Amount().currency(currency).value(value));
+        request.setReference(UUID.randomUUID().toString());
+
+        log.info("Capture request pspReference={} value={} {}", pspReference, value, currency);
+        var response = modificationsApi.captureAuthorisedPayment(pspReference, request);
+        log.info("*** Capture response pspReference={} status={} ***",
+                response.getPspReference(), response.getStatus());
+        return ResponseEntity.ok().body(response);
+    }
+
+    // Preauthorisation module - cancel a pre-authorised payment (before capture).
+    // curl -X POST "https://<host>/api/cancel/{pspReference}"
+    @PostMapping("/api/cancel/{pspReference}")
+    public ResponseEntity<PaymentCancelResponse> cancel(@PathVariable String pspReference) throws IOException, ApiException {
+        var request = new PaymentCancelRequest();
+        request.setMerchantAccount(applicationConfiguration.getAdyenMerchantAccount());
+        request.setReference(UUID.randomUUID().toString());
+
+        log.info("Cancel request pspReference={}", pspReference);
+        var response = modificationsApi.cancelAuthorisedPaymentByPspReference(pspReference, request);
+        log.info("*** Cancel response pspReference={} status={} ***",
+                response.getPspReference(), response.getStatus());
+        return ResponseEntity.ok().body(response);
+    }
+
+    // Preauthorisation module - refund a captured payment.
+    // curl -X POST "https://<host>/api/refund/{pspReference}?value=6600&currency=USD"
+    @PostMapping("/api/refund/{pspReference}")
+    public ResponseEntity<PaymentRefundResponse> refund(
+            @PathVariable String pspReference,
+            @RequestParam(defaultValue = "6600") Long value,
+            @RequestParam(defaultValue = "USD") String currency) throws IOException, ApiException {
+
+        var request = new PaymentRefundRequest();
+        request.setMerchantAccount(applicationConfiguration.getAdyenMerchantAccount());
+        request.setAmount(new Amount().currency(currency).value(value));
+        request.setReference(UUID.randomUUID().toString());
+
+        log.info("Refund request pspReference={} value={} {}", pspReference, value, currency);
+        var response = modificationsApi.refundCapturedPayment(pspReference, request);
+        log.info("*** Refund response pspReference={} status={} ***",
+                response.getPspReference(), response.getStatus());
         return ResponseEntity.ok().body(response);
     }
 
