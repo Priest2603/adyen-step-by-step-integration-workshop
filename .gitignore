@@ -27,6 +27,12 @@ replay_pid*
 .gradle
 **/build/
 
+# Eclipse / VS Code Java output
+bin/
+.classpath
+.project
+.settings/
+
 # idea
 .idea
 

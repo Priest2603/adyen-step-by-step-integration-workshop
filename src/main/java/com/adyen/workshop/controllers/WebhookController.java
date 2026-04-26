@@ -74,7 +74,7 @@ public class WebhookController {
 
             if ("AUTHORISATION".equalsIgnoreCase(eventCode)) {
                 log.info("*** AUTHORISATION webhook - success={} pspReference={} merchantReference={} ***",
-                        item.getSuccess(), item.getPspReference(), item.getMerchantReference());
+                        item.isSuccess(), item.getPspReference(), item.getMerchantReference());
             }
 
             return ResponseEntity.accepted().build();
